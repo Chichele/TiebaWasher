@@ -10,6 +10,8 @@ import urllib
 import sys
 from bs4 import BeautifulSoup
 from settings import *
+import simsimi
+import threading
 
 
 def login_check(content):
@@ -34,7 +36,7 @@ def login():
     global session
     try:
         session = requests.session()
-        session.get(baiduUrl)       #打开一次百度首页，获取相关cookies
+        session.get(baiduUrl)       # 打开一次百度首页，获取相关cookies
         page = session.post(loginUrl, data=loginData, headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/36.0.1985.125 Safari/537.36'})
     except:
         print "Login Error"
@@ -44,35 +46,54 @@ def login():
         print 'Login failed'
         return False
     else:
-        print 'login successful!'
+        print 'Login successful!'
         return True
 
 
-def build_data(content):
+def talk(content, callback):
+    global sim
+    while 1:
+        if sim.ready:
+            sim.talk(content, callback)
+            break
+        else:
+            time.sleep(1)
+
+
+def get_simsimi_response(response):
     """
     构造回复帖子时用到的postData
-    :param content: 主题贴的HTML内容
-    :return: 返回postData
+    :param response: 机器人返回的回答内容
+    :return:
     """
-    soup = BeautifulSoup(content)
-    data = {'sub1': u'回帖', 'co': replyWords}
+    global sim
+    sim.http.stop()
+    response += u"""
+                                                          大声告诉我！这是不是二楼！
+    """
+    global subject_soup
+    data = {'sub1': u'回帖', 'co': response}
     #找出div标签，class为d h的部分，这些都是回帖表单需要的元素
-    subjects = soup.find_all(name="div", attrs={"class": "d h"})
+    subjects = subject_soup.find_all(name="div", attrs={"class": "d h"})
     hidden_elems = subjects[0].find_all(name="input", attrs={"type": "hidden"})
     for elem in hidden_elems:
         data[elem['name']] = elem['value']
-    return data
-
-
-def open_subject(subject_url):
-    sub_page = session.get(subject_url)
-    data = build_data(sub_page.content)
     reply_request = session.post(tiebaUrl+"/submit", data=data)
     #print reply_request.content
+    subject_main_content = subject_soup.find(name="div", attrs={"class": "bc p"}).strong.text
     if reply_request.status_code == 200:
-        print "[%s]reply successful!: %s" % (time.asctime(), subject_url)
+        print "[%s]Reply successful!: name：%s" % (time.asctime(), subject_main_content.encode("utf8"))
     else:
-        print "[%s]reply failed!: %s" % (time.asctime(), subject_url)
+        print "[%s]Reply failed!: name：%s" % (time.asctime(), subject_main_content.encode("utf8"))
+                    
+
+def open_subject(subject_url):
+    sub_page = session.get(subject_url)    
+    global subject_soup
+    subject_soup = BeautifulSoup(sub_page.content)
+    subject_main_content = subject_soup.find(name="div", attrs={"class": "bc p"}).strong.text
+    subject_main_content += subject_soup.find(name="div", attrs={"class": "i"}).text
+    talk(subject_main_content, get_simsimi_response)
 
 
 def washer():
@@ -90,9 +111,15 @@ def washer():
         return
 
     for sub in subjects:
-        if sub.p.find(text=re.compile(u"回0")):      #如果找到回复为0的
+        if sub.p.find(text=re.compile(u"回0")):      # 如果找到回复数为0的帖子
             print "[%s]open subject:%s" % (time.asctime(), tiebaUrl+"/"+sub.a['href'])
-            open_subject(tiebaUrl+"/"+sub.a['href'])     #打开该主题，参数为主题贴链接
+            _link = tiebaUrl+"/"+sub.a['href']
+            global sim
+            sim = simsimi.SimSimiTalk()
+            t = threading.Thread(target=open_subject, args=(_link,))
+            t.setDaemon(True)
+            t.start()
+            sim.http.start()
 
 
 def sign_in_all():
@@ -112,7 +139,7 @@ def sign_in(url):
     page = session.get(url)
     soup = BeautifulSoup(page.content)
     sign_in_div = soup.find(name="td", attrs={"style": "text-align:right;"})
-    if sign_in_div.a and sign_in_div.a.get("href"):
+    if sign_in_div and sign_in_div.a and sign_in_div.a.get("href"):
         sign_in_url = sign_in_div.a["href"]
         session.get("http://tieba.baidu.com"+sign_in_url)
         print "[ok]:%s" % "http://tieba.baidu.com"+sign_in_url
@@ -121,9 +148,10 @@ def sign_in(url):
 if __name__ == '__main__':
     if login():
         #登录成功
-        if sys.argv[1] == '-s':     #当运行参数sys.argv[1]为"-s"时，进行签到
+        if len(sys.argv) >=2 and sys.argv[1] == '-s':     #当运行参数sys.argv[1]为"-s"时，进行签到
             sign_in_all()
         print_delimiter()
+       
         while True:
             try:
                 washer()
@@ -132,3 +160,4 @@ if __name__ == '__main__':
                 print str(e)
             print_delimiter()
             time.sleep(random.randint(timeInterval, timeInterval+10))
+
